@@ -1,44 +1,35 @@
-<?php
+<?php /** @noinspection PhpUndefinedClassInspection */
+
 /**
- * A fast memory effecient PHP class to convert MHT file to HTML (and images)
+ * A fast memory efficient PHP class to convert MHT file to HTML (and images)
  *
  * NOTICE OF LICENSE
  *
  * Licensed under MIT License. URL: http://opensource.org/licenses/mit-license.html
  *
- * @version    1.0
+ * @version    2.0
  * @author     Andy Hu
  * @license    MIT
- * @copyright  (c) 2013, Andy Hu
+ * @copyright  (c) 2013, Andy Hu, 2020 Chris
  * @link       https://github.com/andyhu/mht2html
  */
-
 class MhtToHtml
 {
-    const READ_LENGTH = 102400;
-    const STR_BOUNDARY_PREFIX = 'boundary="';
-    const STR_CONTENT_TYPE = 'Content-Type:';
-    const STR_CONTENT_LOCATION = 'Content-Location:';
-    const STR_LINE_BREAK = "\n";
-
-    // output image dir
-    public $outputDir = './html';
+    public $file;
+    public $outputDir = './htm';
+    public $fileSize;
+    public $imageFiles;
+    public $textFiles;
 
     // file path
-    public $file;
-    // file size
-    public $fileSize;
-    // extracted image files
-    public $imageFiles;
-    // extracted text/html files
-    public $textFiles;
+    private $STR_BOUNDARY_PREFIX = 'boundary="';
+
 
     // file stream of the mht file
     private $stream;
     // boundary string
     private $boundaryStr;
     // the start pos of the real content
-    private $contentPos;
     // content parts
     private $parts;
     // if there's a need to replace the image name to the name with md5 of the image file
@@ -54,33 +45,31 @@ class MhtToHtml
      *
      * @param string $outputDir
      * Directory of the image output, should be writable
+     * @throws Exception
      */
     public function __construct($file = null, $outputDir = null)
     {
         set_time_limit(0);
-        if(!$file) {
-            if(php_sapi_name() === 'cli') {
+        if (!$file) {
+            if (php_sapi_name() === 'cli') {
                 echo 'Please input file name: ';
                 $file = trim(fgets(STDIN));
             }
         }
         $this->loadFile($file);
-        if($outputDir) {
-            $dirAvailable = true;
-            if(!is_dir($outputDir)) {
-                $dirAvailable = mkdir($outputDir);
-            }
-            if(!is_writable(realpath($outputDir)) || !$dirAvailable) {
-                throw new Exception('Output directory doesn\'t exist or isn\'t writable');
-            }
-            else {
-                $this->outputDir = $outputDir;
-            }
+        empty($outputDir) && $outputDir = $this->outputDir;
+		$withoutExt = preg_replace('/\\.[^.\\s]{3,4}$/', '', $file);
+		$this->outputDir = './'.$withoutExt;
+		$outputDir = './'.$withoutExt;
+        // var_dump($outputDir);
+        $dirAvailable = true;
+        if (!is_dir($outputDir)) {
+            $dirAvailable = mkdir($outputDir);
         }
-    }
+        if (!is_writable(realpath($outputDir)) || !$dirAvailable) {
+            throw new Exception('Output directory doesn\'t exist or isn\'t writable');
+        }
 
-    public function setReplaceImageName($check) {
-      $this->replaceImageName = (bool)$check;
     }
 
     /**
@@ -88,20 +77,20 @@ class MhtToHtml
      *
      * @param string $file
      * MHT file path
+     * @throws Exception
      */
     public function loadFile($file)
     {
-        if(is_file($file) && is_readable($file)) {
+        if (is_file($file) && is_readable($file)) {
             $this->file = realpath($file);
-            $this->stream = fopen($file, 'r');
+            $this->stream = file_get_contents($this->file);
             $this->fileSize = filesize($this->file);
 
             $this->boundaryStr = $this->getBoundary();
-            if(!$this->boundaryStr) {
+            if (!$this->boundaryStr) {
                 throw new Exception('Incorrect file format: Boundary string not found!');
             }
-        }
-        else {
+        } else {
             throw new Exception('File doesn\'t exist or is in wrong format');
         }
     }
@@ -110,27 +99,26 @@ class MhtToHtml
      * Get boundary string
      *
      * @return string
-     * Return bondary string or false
+     * Return boundary string or false
      */
     private function getBoundary()
     {
-        fseek($this->stream, 0);
-        while(!feof($this->stream)) {
-            $line = trim(fgets($this->stream));
-            if(($pos = strpos($line, self::STR_BOUNDARY_PREFIX)) !== FALSE) {
-                while('' === ($line = trim(fgets($this->stream)))) {
-                }
-
-                $this->contentPos = ftell($this->stream);
-                return $line;
-            }
+        // var_dump(count(explode($this->STR_BOUNDARY_PREFIX, $this->stream)));
+        if (!preg_match("/{$this->STR_BOUNDARY_PREFIX}([^\"]+)\"/", $this->stream, $m)) {
+            return false;
         }
-        return false;
+        return $m[1];
+    }
+
+    /** @noinspection PhpUnused */
+    public function setReplaceImageName($check)
+    {
+        $this->replaceImageName = (bool)$check;
     }
 
     public function __destruct()
     {
-        @fclose($this->stream);
+        // @fclose($this->stream);
     }
 
     /**
@@ -139,98 +127,40 @@ class MhtToHtml
     public function parse()
     {
         $this->getParts();
-        // keep the variable name short
-        $fp = &$this->stream;
         $this->imageNameMap = array();
+
         // write images to disk
-        foreach($this->parts as $i => $part) {
+        foreach ($this->parts as $i => $part) {
             // processing image
-            if($part['type'] == 'image' && !isset($this->imageNameMap[$part['image_file']])) {
+            if ($part['type'] == 'image' && !isset($this->imageNameMap[$part['image_file']])) {
                 $part['image_file'] = str_replace(array('\\'), '/', $part['image_file']);
-                fseek($fp, $part['start']);
-                $oldFilePath = realpath($this->outputDir) . DIRECTORY_SEPARATOR . $part['image_file'];
-                if(!$this->replaceImageName) {
-                  if(basename($part['image_file']) != $part['image_file'] && dirname($part['image_file'])) {
-                    mkdir(realpath($this->outputDir) . DIRECTORY_SEPARATOR . dirname($part['image_file']), 0777, true);
-                  }
-                }
-                $wfp = fopen($oldFilePath, 'wb');
-                stream_filter_append($wfp, 'convert.base64-decode', STREAM_FILTER_WRITE);
-                stream_copy_to_stream($fp, $wfp, $part['end'] - $part['start']);
-                fclose($wfp);
-                if($this->replaceImageName) {
+				$oldFilePath = realpath($this->outputDir) . DIRECTORY_SEPARATOR . basename(dirname($part['image_file'])) . DIRECTORY_SEPARATOR . basename($part['image_file']);
+                if (!$this->replaceImageName) {
+                    if (!is_dir(realpath($this->outputDir) . DIRECTORY_SEPARATOR . basename(dirname($part['image_file'])))) {
+                        mkdir(realpath($this->outputDir) . DIRECTORY_SEPARATOR . basename(dirname($part['image_file'])), 0777, true);
+                    }
+                    $newFilePath = $oldFilePath;
+                    $imageFileName = $part['image_file'];
+                } else {
                     $md5FileName = md5_file($oldFilePath) . '.' . str_replace('jpeg', 'jpg', $part['format']);
                     $this->imageNameMap[$part['image_file']] = $md5FileName;
                     $newFilePath = realpath($this->outputDir) . DIRECTORY_SEPARATOR . $md5FileName;
-                    if(file_exists($newFilePath)) {
-                        unlink($oldFilePath);
-                    }
-                    else {
-                        rename($oldFilePath, $newFilePath);
-                    }
                     $imageFileName = $md5FileName;
                 }
-                else {
-                    $imageFileName = $part['image_file'];
-                }
                 $this->imageFiles[] = $imageFileName;
-            }
-        }
-        // output html file
-
-        foreach($this->parts as $i => $part) {
-            // processing html
-            if($part['type'] == 'text') {
-
-                $newFilePath = realpath($this->outputDir) . DIRECTORY_SEPARATOR . 'text' . $i . '.' . $part['format'];
-
-                $wfp = fopen($newFilePath, 'w');
-
-                if($part['format'] == 'html') {
-                    // go to the first line of the file
-                    fseek($fp, $part['start']);
-
-                    $charsLeft = $part['end'] - ftell($fp);
-                    while($charsLeft > 0) {
-                        $content = fread($fp, min($charsLeft, self::READ_LENGTH));
-                        $charsLeft = $part['end'] - ftell($fp);
-
-                        // if there's no line ending, then loop to read next block to get at least a single line of content
-                        while(true) {
-                            // last occurrence of line break, to cut the string for an entire line
-                            $pos = strrpos($content, self::STR_LINE_BREAK);
-                            if($pos === false) {
-                                $content .= fread($fp, min($charsLeft, self::READ_LENGTH));
-                                $charsLeft = $part['end'] - ftell($fp);
-                            }
-                            if($pos !== false || $charsLeft == 0) {
-                                break;
-                            }
-                        }
-
-                        // ignore the last half line
-                        if($pos && $charsLeft > self::READ_LENGTH) {
-                            $contentLen = $pos;
-                            fseek($fp, -(strlen($content) - $pos), SEEK_CUR);
-                            $content = substr($content, 0, $pos);
-                        }
-
-                        $this->replaceImageName && $this->replaceImage($content);
-
-                        fwrite($wfp, $content);
-                    }
-
-                    fclose($wfp);
-                }
-                else {
-                    fseek($fp, $part['start']);
-                    stream_copy_to_stream($fp, $wfp, $part['end'] - $part['start']);
-                    fclose($wfp);
-
-                }
-
+            } elseif ($part['type'] == 'text' && $part['format'] == 'html') {
+                // not right yet (??) - consider frames... need to find internet explorer somewhere to investigate
+                $newFilePath = realpath($this->outputDir) . DIRECTORY_SEPARATOR . basename($part['image_file']);
+                $this->replaceImageName && $this->replaceImage($part['content']);
                 $this->textFiles[] = basename($newFilePath);
+            } else {
+                // xml or something idk
+                if (!is_dir(realpath($this->outputDir) . DIRECTORY_SEPARATOR . basename(dirname($part['image_file'])))) {
+                    mkdir(realpath($this->outputDir) . DIRECTORY_SEPARATOR . basename(dirname($part['image_file'])), 0777, true);
+                }
+                $newFilePath = realpath($this->outputDir) . DIRECTORY_SEPARATOR . basename(dirname($part['image_file'])) . DIRECTORY_SEPARATOR . basename($part['image_file']);
             }
+            file_put_contents($newFilePath, $part['content']);
         }
     }
 
@@ -239,67 +169,42 @@ class MhtToHtml
      */
     private function getParts()
     {
-        // keep the variable name short
-        $fp = &$this->stream;
-        // content parts count
-        $i = 0;
-        // next reading pos (just after the boundary string)
-        $nextStart = $this->contentPos;
-        while(true) {
-            // jump to next content block
-            fseek($fp, $nextStart);
-            // start position of the current reading trunk, not the start of the content block
-            $startPos = $nextStart;
-            while(true) {
-                // read content block
-                $content = fread($fp, self::READ_LENGTH);
-                // looped to end of file, break the outer while
-                if($this->fileSize - ftell($fp) < 10 && empty($content)) break 2;
+        $they = explode($this->boundaryStr, $this->stream);
 
-                $pos = strpos($content, $this->boundaryStr);
-                // boundary string not found
-                if($pos === false) {
-                    // set back the file pointer to the length of boundary string, in case the current $content string contains half of the boundary string
-                    fseek($fp, - strlen($this->boundaryStr), SEEK_CUR);
-                    $startPos = ftell($fp);
-                }
-                // boundary string found
-                else {
-                    fseek($fp, $nextStart);
-                    // get content meta and find the start offset of the real content
-                    while($line = trim(fgets($fp))) {
-                        // check block content type
-                        $posType = stripos($line, self::STR_CONTENT_TYPE);
-                        if($posType !== false) {
-                            $posType += strlen(self::STR_CONTENT_TYPE);
-                            // get content type and format
-                            list($this->parts[$i]['type'], $this->parts[$i]['format']) = explode('/', trim(substr($line, $posType)));
-                            continue;
-                        }
+        unset($they[0], $they[1]);
+        foreach ($they as $it) {
 
-                        // check image file name
-                        $posFileName = stripos($line, self::STR_CONTENT_LOCATION);
-                        if($posFileName !== false) {
-                            $posFileName += strlen(self::STR_CONTENT_LOCATION);
-                            $this->parts[$i]['image_file'] = trim(substr($line, $posFileName));
-                        }
+            $it = explode("\r\n\r\n", trim($it), 2);
+            if (isset($it[1])) {
+                $lines = explode("\r\n", $it[0]);
+                // last line is file separator
+                $it[1] = rtrim($it[1], "\r\n-");
+                $part = ['content' => $it[1]];
+
+                foreach ($lines as $line) {
+
+                    $v = sscanf($line, 'Content-Type: %s')[0];
+                    if ($v) {
+                        list($part['type'], $part['format']) = explode('/', $v);
+                        $part['format'] = preg_replace('@;.*@', '', $part['format']);
+                        continue;
                     }
-                    $this->parts[$i]['start'] = ftell($fp);
-                    // find the next start
-                    fseek($fp, $startPos + $pos);
-                    fgets($fp);
-                    $nextStart = ftell($fp);
-
-                    // stripe line endings
-                    fseek($fp, $startPos + $pos - 20);
-                    $strEmpty = fread($fp, 20);
-                    $lenEmpty = strlen($strEmpty) - strlen(rtrim($strEmpty));
-                    $this->parts[$i]['end'] = $startPos + $pos - $lenEmpty;
-
-                    break;
+                    $v = sscanf($line, 'Content-Location: %s')[0];
+                    if ($v) {
+                        $part['image_file'] = $v;
+                        continue;
+                    }
+                    $v = sscanf($line, 'Content-Transfer-Encoding: %s')[0];
+                    if ($v) {
+                        $part['encoding'] = $v;
+                        continue;
+                    }
                 }
+                (@$part['encoding'] == 'base64') && @$part['content'] = base64_decode($part['content']);
+                (@$part['encoding'] == 'quoted-printable') && @$part['content'] = quoted_printable_decode($part['content']);
+
+                $this->parts[] = $part;
             }
-            $i++;
         }
     }
 
@@ -311,10 +216,11 @@ class MhtToHtml
      */
     function replaceImage(&$content)
     {
-        foreach($this->imageNameMap as $oldImg => $newImg) {
-            if(strpos($content, $oldImg) !== false) {
+        foreach ($this->imageNameMap as $oldImg => $newImg) {
+            if (strpos($content, $oldImg) !== false) {
                 $content = preg_replace('/(<img\s+[^>]*?)(["\'])' . preg_quote($oldImg, '/') . '\2/si', '$1"' . $newImg . '"', $content);
             }
         }
     }
 }
+?>
